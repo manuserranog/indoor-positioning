@@ -3,4 +3,12 @@
     <color name="colorPrimary">#008577</color>
     <color name="colorPrimaryDark">#00574B</color>
     <color name="colorAccent">#D81B60</color>
+
+    <color name="mapboxWhite">#FFFFFF</color>
+
+
+    <color name="mapboxBlue">#4264fb</color>
+    <color name="mapboxBlueDark">#314ccd</color>
+    <color name="mapboxBlueLight">#aab7ef</color>
+    <color name="mapboxBlueFaint">#edf0fd</color>
 </resources>

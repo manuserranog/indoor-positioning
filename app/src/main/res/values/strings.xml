@@ -16,4 +16,7 @@
     <string name="menu_tools">Tools</string>
     <string name="menu_share">Share</string>
     <string name="menu_send">Send</string>
+    <string name="title_activity_ranging">RangingActivity</string>
+    <string name="access_token">sk.eyJ1IjoibWFudXNnIiwiYSI6ImNrOW9pemptZDAxM2ozbHFoaDFmemFxMXAifQ.gDNgqchtX4nEhJu32sRTAA</string>
+    <string name="activity_lab_indoor_map_title">Indoor Activity</string>
 </resources>
