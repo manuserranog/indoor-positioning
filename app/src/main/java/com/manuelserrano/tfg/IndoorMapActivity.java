@@ -1,13 +1,23 @@
 package com.manuelserrano.tfg;
 
+import android.Manifest;
+import android.app.Activity;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.icu.text.DateIntervalFormat;
 import android.location.Location;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
+import android.os.RemoteException;
 import android.util.Log;
 import android.view.View;
 import android.view.animation.AlphaAnimation;
@@ -15,24 +25,22 @@ import android.view.animation.BounceInterpolator;
 import android.widget.Button;
 import android.widget.Toast;
 
+import com.android.volley.Request;
+import com.android.volley.Response;
+import com.android.volley.VolleyError;
+import com.android.volley.toolbox.JsonObjectRequest;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.lemmingapex.trilateration.NonLinearLeastSquaresSolver;
 import com.lemmingapex.trilateration.TrilaterationFunction;
-import com.manuelserrano.tfg.models.Beacon;
-import com.mapbox.android.core.location.LocationEngine;
-import com.mapbox.android.core.location.LocationEngineProvider;
-import com.mapbox.android.core.permissions.PermissionsManager;
+import com.manuelserrano.tfg.models.BeaconBuilding;
 import com.mapbox.geojson.Point;
 import com.mapbox.geojson.Polygon;
 import com.mapbox.mapboxsdk.Mapbox;
-import com.mapbox.mapboxsdk.annotations.MarkerOptions;
 import com.mapbox.mapboxsdk.geometry.LatLng;
 import com.mapbox.mapboxsdk.location.LocationComponent;
 import com.mapbox.mapboxsdk.location.LocationComponentActivationOptions;
 import com.mapbox.mapboxsdk.location.LocationComponentOptions;
-import com.mapbox.mapboxsdk.location.modes.CameraMode;
-import com.mapbox.mapboxsdk.location.modes.RenderMode;
 import com.mapbox.mapboxsdk.maps.MapView;
 import com.mapbox.mapboxsdk.maps.MapboxMap;
 import com.mapbox.mapboxsdk.maps.OnMapReadyCallback;
@@ -47,16 +55,25 @@ import com.mapbox.mapboxsdk.style.sources.GeoJsonSource;
 import com.mapbox.mapboxsdk.utils.ColorUtils;
 import com.mapbox.turf.TurfJoins;
 
+import org.altbeacon.beacon.Beacon;
+import org.altbeacon.beacon.BeaconConsumer;
+import org.altbeacon.beacon.BeaconManager;
+import org.altbeacon.beacon.BeaconParser;
+import org.altbeacon.beacon.Identifier;
+import org.altbeacon.beacon.RangeNotifier;
+import org.altbeacon.beacon.Region;
 import org.apache.commons.math3.fitting.leastsquares.LeastSquaresOptimizer;
 import org.apache.commons.math3.fitting.leastsquares.LevenbergMarquardtOptimizer;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.linear.RealVector;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Type;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 import static com.mapbox.mapboxsdk.style.expressions.Expression.exponential;
@@ -74,30 +91,60 @@ import static java.lang.Math.cos;
 import static java.lang.Math.pow;
 import static java.lang.Math.sin;
 
-/**
- * Display an indoor map of a building with toggles to switch between floor levels
- */
-public class IndoorMapActivity extends AppCompatActivity {
+public class IndoorMapActivity extends AppCompatActivity implements BeaconConsumer, RangeNotifier {
 
     private GeoJsonSource indoorBuildingSource;
 
     private List<List<Point>> boundingBoxList;
     private View levelButtons;
     private MapView mapView;
+    BeaconManager beaconManager;
+    public BluetoothManager bluetoothState;
+    BluetoothAdapter mBluetoothAdapter;
+
+    private LocationComponent locationComponent;
+    private LocationComponentActivationOptions locationComponentActivationOptions;
+
+    private List<BeaconBuilding> beaconBuildings;
+    private DateIntervalFormat MySingleton;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-// Mapbox access token is configured here. This needs to be called either in your application
-// object or in the same activity which contains the mapview.
         Mapbox.getInstance(this, getString(R.string.access_token));
 
-// This contains the MapView in XML and needs to be called after the access token is configured.
         setContentView(R.layout.activity_lab_indoor_map);
+        checkPermissions(IndoorMapActivity.this, this);
+        requestPermissions();
+
+        initBeaconScanner();
 
         mapView = findViewById(R.id.mapView);
         mapView.onCreate(savedInstanceState);
+
+        String url = "http://localhost:3000/v1/beacons";
+
+        JsonObjectRequest jsonObjectRequest = new JsonObjectRequest
+                (Request.Method.GET, url, null, new Response.Listener<JSONObject>() {
+
+                    @Override
+                    public void onResponse(JSONObject response) {
+
+                    }
+                }, new Response.ErrorListener() {
+
+                    @Override
+                    public void onErrorResponse(VolleyError error) {
+                        // TODO: Handle error
+
+                    }
+                });
+
+        // Access the RequestQueue through your singleton class.
+        //MySingleton.getInstance(this).addToRequestQueue(jsonObjectRequest);
+
+
         mapView.getMapAsync(new OnMapReadyCallback() {
             @Override
             public void onMapReady(@NonNull final MapboxMap mapboxMap) {
@@ -121,7 +168,8 @@ public class IndoorMapActivity extends AppCompatActivity {
                             public void onCameraMove() {
                                 if (mapboxMap.getCameraPosition().zoom > 16) {
                                     if (TurfJoins.inside(Point.fromLngLat(mapboxMap.getCameraPosition().target.getLongitude(),
-                                            mapboxMap.getCameraPosition().target.getLatitude()), Polygon.fromLngLats(boundingBoxList))) {
+                                            mapboxMap.getCameraPosition().target.getLatitude()),
+                                            Polygon.fromLngLats(boundingBoxList))) {
                                         if (levelButtons.getVisibility() != View.VISIBLE) {
                                             showLevelButton();
                                         }
@@ -186,13 +234,12 @@ public class IndoorMapActivity extends AppCompatActivity {
                                 .withDraggable(true);
                         circleManager.create(circleOptions3);
 
-                        Type listType = new TypeToken<List<Beacon>>() {
+                        Type listType = new TypeToken<List<BeaconBuilding>>() {
                         }.getType();
-                        ArrayList<Beacon> beacons = new Gson().fromJson(loadJsonFromAsset("beacons.json"), listType);
+                        beaconBuildings = new Gson().fromJson(loadJsonFromAsset("beacons.json"), listType);
 
 
                         //LatLng position = getCentralGeoCoordinate(beacons);
-
                         double kFilteringFactor = 0.1;
 
                         double rollingRssi = 0;
@@ -204,12 +251,12 @@ public class IndoorMapActivity extends AppCompatActivity {
                         double value2 = calculateAccuracyWithRSSI(rollingRssi2);
 
 
-                        Beacon a = beacons.get(0);
-                        Beacon b = beacons.get(1);
-                        Beacon c = beacons.get(2);
+                        BeaconBuilding a = beaconBuildings.get(0);
+                        BeaconBuilding b = beaconBuildings.get(1);
+                        BeaconBuilding c = beaconBuildings.get(2);
 
 
-                        double R= 6371;
+                        double R = 6371;
                         double x1 = R * cos(a.getLat()) * cos(a.getLng());
                         double y1 = R * cos(a.getLat()) * sin(a.getLng());
 
@@ -219,35 +266,31 @@ public class IndoorMapActivity extends AppCompatActivity {
                         double x3 = R * cos(c.getLat()) * cos(c.getLng());
                         double y3 = R * cos(c.getLat()) * sin(c.getLng());
 
-                        double[][] positions = new double[][] { { x1,y1}, { x2,y2  }, { x3,y3  } };
-                        double[] distances = new double[] {2000, 1300.97, 3000.32};
+                        double[][] positions = new double[][]{{x1, y1}, {x2, y2}, {x3, y3}};
+                        double[] distances = new double[]{2000, 1300.97, 3000.32};
 
-                        NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
+                        NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new
+                                TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
                         LeastSquaresOptimizer.Optimum optimum = solver.solve();
 
                         // the answer
                         double[] centroid = optimum.getPoint().toArray();
 
-                        //error and geometry information; may throw SingularMatrixException depending the threshold argument provided
+                        //error and geometry information; may throw SingularMatrixException
+                        // depending the threshold argument provided
                         RealVector standardDeviation = optimum.getSigma(0);
                         RealMatrix covarianceMatrix = optimum.getCovariances(0);
 
-
-                        double z=1;
+                        double z = 1;
                         double lat = asin(z / R);
                         double lon = atan2(centroid[0], centroid[1]);
 
-                        //LatLng position = new LatLng(lat,lon);
-
-                        LatLng position = getLocationByTrilateration(a,1.0,b,8.0,c,1.0);
-
                         /*CircleOptions userPosition = new CircleOptions()
-                                .withLatLng(new LatLng(position.getLatitude(), position.getLongitude()))
-                                .withCircleColor(ColorUtils.colorToRgbaString(Color.RED))
-                                .withCircleRadius(12f)
-                                .withDraggable(true);
-                        circleManager.create(userPosition);*/
-
+                .withLatLng(new LatLng(position.getLatitude(), position.getLongitude()))
+                .withCircleColor(ColorUtils.colorToRgbaString(Color.RED))
+                .withCircleRadius(12f)
+                .withDraggable(true);
+        circleManager.create(userPosition);*/
 
                         LocationComponentOptions locationComponentOptions =
                                 LocationComponentOptions.builder(getApplicationContext())
@@ -257,21 +300,13 @@ public class IndoorMapActivity extends AppCompatActivity {
                                         .pulseInterpolator(new BounceInterpolator())
                                         .build();
 
-                        LocationComponentActivationOptions locationComponentActivationOptions = LocationComponentActivationOptions
-                                .builder(getApplicationContext(), style)
-                                .locationComponentOptions(locationComponentOptions)
-                                .build();
+                        locationComponentActivationOptions =
+                                LocationComponentActivationOptions
+                                        .builder(getApplicationContext(), style)
+                                        .locationComponentOptions(locationComponentOptions)
+                                        .build();
 
-                        LocationComponent locationComponent = mapboxMap.getLocationComponent();
-                        Location location = new Location("prueba");
-                        location.setLatitude(position.getLatitude());
-                        location.setLongitude(position.getLongitude());
-                        locationComponent.activateLocationComponent(locationComponentActivationOptions);
-
-                        locationComponent.forceLocationUpdate(location);
-
-                        //locationComponent.setLocationComponentEnabled(true);
-
+                        locationComponent = mapboxMap.getLocationComponent();
 
                     }
                 });
@@ -295,6 +330,51 @@ public class IndoorMapActivity extends AppCompatActivity {
 
             }
         });
+    }
+
+    private void initBeaconScanner() {
+        String IBEACON_LAYOUT = "m:0-3=4c000215,i:4-19,i:20-21,i:22-23,p:24-24";
+        String EDDYSTONE_UID_LAYOUT = BeaconParser.EDDYSTONE_UID_LAYOUT;
+        String EDDYSTONE_URL_LAYOUT = BeaconParser.EDDYSTONE_URL_LAYOUT;
+        String EDDYSTONE_TLM_LAYOUT = BeaconParser.EDDYSTONE_TLM_LAYOUT;
+
+        beaconManager = BeaconManager.getInstanceForApplication(this);
+        beaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout(IBEACON_LAYOUT));
+        beaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout(EDDYSTONE_UID_LAYOUT));
+        beaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout(EDDYSTONE_URL_LAYOUT));
+        beaconManager.getBeaconParsers().add(new BeaconParser().setBeaconLayout(EDDYSTONE_TLM_LAYOUT));
+
+        bluetoothState = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        mBluetoothAdapter = bluetoothState.getAdapter();
+        startScan();
+    }
+
+    private void requestPermissions() {
+        if (ContextCompat.checkSelfPermission(IndoorMapActivity.this,
+                Manifest.permission.BLUETOOTH)
+                != PackageManager.PERMISSION_GRANTED) {
+
+            ActivityCompat.requestPermissions(IndoorMapActivity.this,
+                    new String[]{Manifest.permission.BLUETOOTH, Manifest.permission.ACCESS_COARSE_LOCATION},
+                    0);
+        } else {
+            Log.d("", "GRANTED");
+        }
+    }
+
+    private void updatePosition() {
+
+        LatLng position = getLocationByTrilateration(beaconBuildings.get(0), beaconBuildings.get(0).getDistance(),
+                beaconBuildings.get(1), beaconBuildings.get(1).getDistance(), beaconBuildings.get(2),
+                beaconBuildings.get(2).getDistance());
+
+        Location location = new Location("prueba");
+        location.setLatitude(position.getLatitude());
+        location.setLongitude(position.getLongitude());
+        locationComponent.activateLocationComponent(locationComponentActivationOptions);
+
+        locationComponent.forceLocationUpdate(location);
+        //locationComponent.setLocationComponentEnabled(true);
     }
 
     @Override
@@ -361,7 +441,8 @@ public class IndoorMapActivity extends AppCompatActivity {
 // Method used to load the indoor layer on the map. First the fill layer is drawn and then the
 // line layer is added.
 
-        FillLayer indoorBuildingLayer = new FillLayer("indoor-building-fill", "indoor-building").withProperties(
+        FillLayer indoorBuildingLayer = new FillLayer("indoor-building-fill",
+                "indoor-building").withProperties(
                 fillColor(Color.parseColor("#eeeeee")),
 // Function.zoom is used here to fade out the indoor layer if zoom level is beyond 16. Only
 // necessary to show the indoor map at high zoom levels.
@@ -372,7 +453,8 @@ public class IndoorMapActivity extends AppCompatActivity {
 
         style.addLayer(indoorBuildingLayer);
 
-        LineLayer indoorBuildingLineLayer = new LineLayer("indoor-building-line", "indoor-building").withProperties(
+        LineLayer indoorBuildingLineLayer = new LineLayer("indoor-building-line",
+                "indoor-building").withProperties(
                 lineColor(Color.parseColor("#50667f")),
                 lineWidth(0.5f),
                 lineOpacity(interpolate(exponential(1f), zoom(),
@@ -399,7 +481,7 @@ public class IndoorMapActivity extends AppCompatActivity {
         }
     }
 
-    public LatLng getCentralGeoCoordinate(List<Beacon> geoCoordinates) {
+    public LatLng getCentralGeoCoordinate(List<BeaconBuilding> geoCoordinates) {
 //        if (geoCoordinates.Count == 1) {
 //            return geoCoordinates.Single();
 //        }
@@ -407,7 +489,7 @@ public class IndoorMapActivity extends AppCompatActivity {
         double y = 0;
         double z = 0;
 
-        for (Beacon coordinate : geoCoordinates) {
+        for (BeaconBuilding coordinate : geoCoordinates) {
 
             double latitude = coordinate.getLat() * Math.PI / 180;
             double longitude = coordinate.getLng() * Math.PI / 180;
@@ -431,28 +513,31 @@ public class IndoorMapActivity extends AppCompatActivity {
     }
 
 
-    public LatLng getCoordinateWithBeaconA( Beacon a ,Beacon b, Beacon c, double dA, double dB, double dC) {
+    public LatLng getCoordinateWithBeaconA(BeaconBuilding a, BeaconBuilding b, BeaconBuilding c, double dA, double dB, double dC) {
         double W, Z, x, y, y2;
-        W = dA*dA - dB*dB - a.getLat()*a.getLat() - a.getLng()*a.getLng() + b.getLat()*b.getLat() + b.getLng()*b.getLng();
-        Z = dB*dB - dC*dC - b.getLat()*b.getLat() - b.getLng()*b.getLng() + c.getLat()*c.getLat() + c.getLng()*c.getLng();
+        W = dA * dA - dB * dB - a.getLat() * a.getLat() - a.getLng() * a.getLng() + b.getLat() * b.getLat() + b.getLng() * b.getLng();
+        Z = dB * dB - dC * dC - b.getLat() * b.getLat() - b.getLng() * b.getLng() + c.getLat() * c.getLat() + c.getLng() * c.getLng();
 
-        x = (W*(c.getLng()-b.getLng()) - Z*(b.getLng()-a.getLng())) / (2 * ((b.getLat()-a.getLat())*(c.getLng()-b.getLng()) - (c.getLat()-b.getLat())*(b.getLng()-a.getLng())));
-        y = (W - 2*x*(b.getLat()-a.getLat())) / (2*(b.getLng()-a.getLng()));
+        x = (W * (c.getLng() - b.getLng()) - Z * (b.getLng() - a.getLng())) / (2 * ((b.getLat() - a.getLat()) * (c.getLng() - b.getLng())
+                - (c.getLat() - b.getLat()) * (b.getLng() - a.getLng())));
+        y = (W - 2 * x * (b.getLat() - a.getLat())) / (2 * (b.getLng() - a.getLng()));
         //y2 is a second measure of y to mitigate errors
-        y2 = (Z - 2*x*(c.getLat()-b.getLat())) / (2*(c.getLng()-b.getLng()));
+        y2 = (Z - 2 * x * (c.getLat() - b.getLat())) / (2 * (c.getLng() - b.getLng()));
 
         y = (y + y2) / 2;
         return new LatLng(x, y);
     }
 
 
-    public LatLng getCoordinateWithBeacons(Beacon beacon1,Beacon beacon2,Beacon beacon3,double distance1,double distance2,double distance3){
-        double xa = beacon1.getLat();
-        double ya = beacon1.getLng();
-        double xb = beacon2.getLat();
-        double yb = beacon2.getLng();
-        double xc = beacon3.getLat();
-        double yc = beacon3.getLng();
+    public LatLng getCoordinateWithBeacons(BeaconBuilding beaconBuilding1,
+                                           BeaconBuilding beaconBuilding2, BeaconBuilding beaconBuilding3, double distance1,
+                                           double distance2, double distance3) {
+        double xa = beaconBuilding1.getLat();
+        double ya = beaconBuilding1.getLng();
+        double xb = beaconBuilding2.getLat();
+        double yb = beaconBuilding2.getLng();
+        double xc = beaconBuilding3.getLat();
+        double yc = beaconBuilding3.getLng();
         double ra = distance1;
         double rb = distance2;
         double rc = distance3;
@@ -462,43 +547,40 @@ public class IndoorMapActivity extends AppCompatActivity {
         double y = ((T * (xb - xc)) - (S * (xb - xa))) / (((ya - yb) * (xb - xc)) - ((yc - yb) * (xb - xa)));
         double x = ((y * (ya - yb)) - T) / (xb - xa);
 
-        return new LatLng(x,y);
+        return new LatLng(x, y);
     }
 
-    public  double calculateAccuracyWithRSSI(double rssi) {
+    public double calculateAccuracyWithRSSI(double rssi) {
         //formula adapted from David Young's Radius Networks Android iBeacon Code
         if (rssi == 0) {
             return -1.0; // if we cannot determine accuracy, return -1.
         }
 
-
         double txPower = -70;
-        double ratio = rssi*1.0/txPower;
+        double ratio = rssi * 1.0 / txPower;
         if (ratio < 1.0) {
-            return pow(ratio,10);
-        }
-        else {
-            double accuracy =  (0.89976) * pow(ratio,7.7095) + 0.111;
+            return pow(ratio, 10);
+        } else {
+            double accuracy = (0.89976) * pow(ratio, 7.7095) + 0.111;
             return accuracy;
         }
     }
 
     public static LatLng getLocationByTrilateration(
-            Beacon ponto1, double distance1,
-            Beacon ponto2, double distance2,
-            Beacon ponto3, double distance3){
+            BeaconBuilding ponto1, double distance1,
+            BeaconBuilding ponto2, double distance2,
+            BeaconBuilding ponto3, double distance3) {
 
-        //DECLARACAO DE VARIAVEIS
         LatLng retorno = new LatLng();
-        double[] P1   = new double[2];
-        double[] P2   = new double[2];
-        double[] P3   = new double[2];
-        double[] ex   = new double[2];
-        double[] ey   = new double[2];
+        double[] P1 = new double[2];
+        double[] P2 = new double[2];
+        double[] P3 = new double[2];
+        double[] ex = new double[2];
+        double[] ey = new double[2];
         double[] p3p1 = new double[2];
-        double jval  = 0;
-        double temp  = 0;
-        double ival  = 0;
+        double jval = 0;
+        double temp = 0;
+        double ival = 0;
         double p3p1i = 0;
         double triptx;
         double xval;
@@ -531,50 +613,51 @@ public class IndoorMapActivity extends AppCompatActivity {
         distance3 = (distance3 / 100000);
 
         for (int i = 0; i < P1.length; i++) {
-            t1   = P2[i];
-            t2   = P1[i];
-            t    = t1 - t2;
-            temp += (t*t);
+            t1 = P2[i];
+            t2 = P1[i];
+            t = t1 - t2;
+            temp += (t * t);
         }
         d = Math.sqrt(temp);
         for (int i = 0; i < P1.length; i++) {
-            t1    = P2[i];
-            t2    = P1[i];
-            exx   = (t1 - t2)/(Math.sqrt(temp));
+            t1 = P2[i];
+            t2 = P1[i];
+            exx = (t1 - t2) / (Math.sqrt(temp));
             ex[i] = exx;
         }
         for (int i = 0; i < P3.length; i++) {
-            t1      = P3[i];
-            t2      = P1[i];
-            t3      = t1 - t2;
+            t1 = P3[i];
+            t2 = P1[i];
+            t3 = t1 - t2;
             p3p1[i] = t3;
         }
         for (int i = 0; i < ex.length; i++) {
             t1 = ex[i];
             t2 = p3p1[i];
-            ival += (t1*t2);
-        }
-        for (int  i = 0; i < P3.length; i++) {
-            t1 = P3[i];
-            t2 = P1[i];
-            t3 = ex[i] * ival;
-            t  = t1 - t2 -t3;
-            p3p1i += (t*t);
+            ival += (t1 * t2);
         }
         for (int i = 0; i < P3.length; i++) {
             t1 = P3[i];
             t2 = P1[i];
             t3 = ex[i] * ival;
-            eyy = (t1 - t2 - t3)/Math.sqrt(p3p1i);
+            t = t1 - t2 - t3;
+            p3p1i += (t * t);
+        }
+        for (int i = 0; i < P3.length; i++) {
+            t1 = P3[i];
+            t2 = P1[i];
+            t3 = ex[i] * ival;
+            eyy = (t1 - t2 - t3) / Math.sqrt(p3p1i);
             ey[i] = eyy;
         }
         for (int i = 0; i < ey.length; i++) {
             t1 = ey[i];
             t2 = p3p1[i];
-            jval += (t1*t2);
+            jval += (t1 * t2);
         }
-        xval = (Math.pow(distance1, 2) - Math.pow(distance2, 2) + Math.pow(d, 2))/(2*d);
-        yval = ((Math.pow(distance1, 2) - Math.pow(distance3, 2) + Math.pow(ival, 2) + Math.pow(jval, 2))/(2*jval)) - ((ival/jval)*xval);
+        xval = (Math.pow(distance1, 2) - Math.pow(distance2, 2) + Math.pow(d, 2)) / (2 * d);
+        yval = ((Math.pow(distance1, 2) - Math.pow(distance3, 2) + Math.pow(ival, 2)
+                + Math.pow(jval, 2)) / (2 * jval)) - ((ival / jval) * xval);
 
         t1 = ponto1.getLat();
         t2 = ex[0] * xval;
@@ -590,32 +673,116 @@ public class IndoorMapActivity extends AppCompatActivity {
         return retorno;
     }
 
+    int RC_COARSE_LOCATION = 1;
 
-
-    /*@SuppressWarnings({"MissingPermission"})
-    private void enableLocationComponent(@NonNull Style loadedMapStyle) {
-// Check if permissions are enabled and if not request
-        if (PermissionsManager.areLocationPermissionsGranted(this)) {
-
-// Get an instance of the component
-            LocationComponent locationComponent = mapboxMap.getLocationComponent();
-
-// Activate with options
-            locationComponent.activateLocationComponent(
-                    LocationComponentActivationOptions.builder(this, loadedMapStyle).build());
-
-// Enable to make component visible
-            locationComponent.setLocationComponentEnabled(true);
-
-// Set the component's camera mode
-            locationComponent.setCameraMode(CameraMode.TRACKING);
-
-// Set the component's render mode
-            locationComponent.setRenderMode(RenderMode.COMPASS);
-        } else {
-            permissionsManager = new PermissionsManager(this);
-            permissionsManager.requestLocationPermissions(this);
+    private void startScan() {
+        //mBluetoothAdapter.enable();
+        if (mBluetoothAdapter.isEnabled()) {
+            if (beaconManager.isBound(this) != true) {
+                beaconManager.bind(this);
+            }
         }
-    }*/
+    }
+
+    @Override
+    public void onBeaconServiceConnect() {
+        Log.d("", "beaconManager is bound, ready to start scanning");
+
+
+        // Encapsula un identificador de un beacon de una longitud arbitraria de bytes
+        ArrayList<Identifier> identifiers = new ArrayList<>();
+
+        // Asignar null para indicar que queremos buscar cualquier beacon
+        identifiers.add(null);
+        // Representa un criterio de campos utilizados para buscar beacons
+        Region region = new Region("com.manuelserrano.tfg", null, null, null);
+        try {
+            // Ordena al BeaconService empezar a buscar beacons que coincida con el objeto Region pasado
+            beaconManager.startRangingBeaconsInRegion(region);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+        // Especifica una clase que debería ser llamada cada vez que BeaconsService obtiene datos, una vez por segundo por defecto
+        beaconManager.addRangeNotifier(this);
+    }
+
+    private List<Beacon> allBeacons = new ArrayList<>();
+
+    private int resetDistances = 0;
+
+    @Override
+    public void didRangeBeaconsInRegion(Collection<org.altbeacon.beacon.Beacon> beacons, Region region) {
+        if (beacons.size() > 0) {
+            storeBeaconsAround(beacons);
+//            Log.i("", "El primer beacon detectado se encuentra a una distancia de " +
+//                    beacons.iterator().next().getBluetoothAddress() + " metros.");
+        //Log.i("Nuevo",beacons.iterator().next().getBluetoothAddress().toString());
+        }
+    }
+
+
+    private void storeBeaconsAround(Collection<Beacon> beacons){
+
+        if(resetDistances==5){
+            resetDistances=0;
+
+            for(BeaconBuilding beaconBuilding: beaconBuildings){
+                beaconBuilding.setDistance(10.0);
+
+            }
+            allBeacons= new ArrayList<>();
+
+        }
+
+        for(Beacon newBeacon : beacons){
+            if(!allBeacons.contains(newBeacon)){
+                allBeacons.add(newBeacon);
+            } else{
+                allBeacons.set(allBeacons.indexOf(newBeacon),newBeacon);
+            }
+        }
+
+        for(Beacon b1 : allBeacons){
+            BeaconBuilding beaconFound = beaconBuildings.stream().filter(beaconBuilding -> beaconBuilding.getBluetoothAddress()
+                    .equals(b1.getBluetoothAddress())).findFirst().orElse(null);
+
+            if(beaconFound != null) {
+                beaconFound.setDistance(b1.getDistance());
+                beaconBuildings.set(beaconBuildings.indexOf(beaconFound),beaconFound);
+            }
+        }
+
+        //Log.i("Encontrados",beacons.toString());
+        Log.i("Todos", beaconBuildings.toString());
+        updatePosition();
+        resetDistances++;
+    }
+
+    public static void checkPermissions(Activity activity, Context context) {
+        int PERMISSION_ALL = 1;
+        String[] PERMISSIONS = {
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.BLUETOOTH_PRIVILEGED,
+        };
+
+        if (!hasPermissions(context, PERMISSIONS)) {
+            ActivityCompat.requestPermissions(activity, PERMISSIONS, PERMISSION_ALL);
+        }
+    }
+
+    public static boolean hasPermissions(Context context, String... permissions) {
+        if (context != null && permissions != null) {
+            for (String permission : permissions) {
+                if (ActivityCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
 
 }
