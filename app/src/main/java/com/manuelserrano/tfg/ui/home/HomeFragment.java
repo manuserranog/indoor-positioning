@@ -29,7 +29,6 @@ import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.GroundOverlayOptions;
 import com.google.android.gms.maps.model.LatLng;
-import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.OnFailureListener;
 import com.google.android.gms.tasks.OnSuccessListener;
@@ -42,7 +41,7 @@ import com.google.firebase.firestore.QuerySnapshot;
 import com.google.firebase.storage.FirebaseStorage;
 import com.google.firebase.storage.StorageReference;
 import com.manuelserrano.tfg.R;
-import com.manuelserrano.tfg.models.Building;
+import com.manuelserrano.tfg.models.FirebaseBuilding;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -64,7 +63,7 @@ public class HomeFragment extends Fragment implements OnMapReadyCallback, Locati
     private FirebaseAuth mAuth;
     private FirebaseFirestore dbFirestore;
 
-    private List<Building> buildings;
+    private List<FirebaseBuilding> buildings;
 
     public View onCreateView(@NonNull LayoutInflater inflater,
                              ViewGroup container, Bundle savedInstanceState) {
@@ -119,9 +118,9 @@ public class HomeFragment extends Fragment implements OnMapReadyCallback, Locati
                         if (task.isSuccessful()) {
                             for (QueryDocumentSnapshot document : task.getResult()) {
 
-                                buildings.add(document.toObject(Building.class));
+                                buildings.add(document.toObject(FirebaseBuilding.class));
 
-                                updateBuilding(document.toObject(Building.class));
+                                updateBuilding(document.toObject(FirebaseBuilding.class));
 
                                 Log.d(TAG, document.getId() + " => " + document.getData());
                             }
@@ -159,7 +158,7 @@ public class HomeFragment extends Fragment implements OnMapReadyCallback, Locati
         });
     }
 
-    private void updateBuilding(final Building building) {
+    private void updateBuilding(final FirebaseBuilding building) {
         GeoPoint geoPoint = building.getPosition();
         final LatLng position = new LatLng(geoPoint.getLatitude(), geoPoint.getLongitude());
         //mMap.addMarker(new MarkerOptions().position(position).title(building.getName()));

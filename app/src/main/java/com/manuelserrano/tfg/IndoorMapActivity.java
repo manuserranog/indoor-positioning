@@ -7,16 +7,8 @@ import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.icu.text.DateIntervalFormat;
 import android.location.Location;
 import android.os.Bundle;
-
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.View;
@@ -25,22 +17,31 @@ import android.view.animation.BounceInterpolator;
 import android.widget.Button;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 import com.android.volley.Request;
+import com.android.volley.RequestQueue;
 import com.android.volley.Response;
 import com.android.volley.VolleyError;
-import com.android.volley.toolbox.JsonObjectRequest;
+import com.android.volley.toolbox.StringRequest;
+import com.android.volley.toolbox.Volley;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import com.lemmingapex.trilateration.NonLinearLeastSquaresSolver;
-import com.lemmingapex.trilateration.TrilaterationFunction;
 import com.manuelserrano.tfg.models.BeaconBuilding;
+import com.manuelserrano.tfg.models.Building1;
+import com.mapbox.geojson.FeatureCollection;
 import com.mapbox.geojson.Point;
-import com.mapbox.geojson.Polygon;
 import com.mapbox.mapboxsdk.Mapbox;
 import com.mapbox.mapboxsdk.geometry.LatLng;
 import com.mapbox.mapboxsdk.location.LocationComponent;
 import com.mapbox.mapboxsdk.location.LocationComponentActivationOptions;
 import com.mapbox.mapboxsdk.location.LocationComponentOptions;
+import com.mapbox.mapboxsdk.location.modes.CameraMode;
+import com.mapbox.mapboxsdk.location.modes.RenderMode;
 import com.mapbox.mapboxsdk.maps.MapView;
 import com.mapbox.mapboxsdk.maps.MapboxMap;
 import com.mapbox.mapboxsdk.maps.OnMapReadyCallback;
@@ -53,7 +54,6 @@ import com.mapbox.mapboxsdk.style.layers.FillLayer;
 import com.mapbox.mapboxsdk.style.layers.LineLayer;
 import com.mapbox.mapboxsdk.style.sources.GeoJsonSource;
 import com.mapbox.mapboxsdk.utils.ColorUtils;
-import com.mapbox.turf.TurfJoins;
 
 import org.altbeacon.beacon.Beacon;
 import org.altbeacon.beacon.BeaconConsumer;
@@ -62,11 +62,6 @@ import org.altbeacon.beacon.BeaconParser;
 import org.altbeacon.beacon.Identifier;
 import org.altbeacon.beacon.RangeNotifier;
 import org.altbeacon.beacon.Region;
-import org.apache.commons.math3.fitting.leastsquares.LeastSquaresOptimizer;
-import org.apache.commons.math3.fitting.leastsquares.LevenbergMarquardtOptimizer;
-import org.apache.commons.math3.linear.RealMatrix;
-import org.apache.commons.math3.linear.RealVector;
-import org.json.JSONObject;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -85,7 +80,6 @@ import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.fillOpacity;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineColor;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineOpacity;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineWidth;
-import static java.lang.Math.asin;
 import static java.lang.Math.atan2;
 import static java.lang.Math.cos;
 import static java.lang.Math.pow;
@@ -93,7 +87,7 @@ import static java.lang.Math.sin;
 
 public class IndoorMapActivity extends AppCompatActivity implements BeaconConsumer, RangeNotifier {
 
-    private GeoJsonSource indoorBuildingSource;
+    private GeoJsonSource geoJsonIndoorBuilding;
 
     private List<List<Point>> boundingBoxList;
     private View levelButtons;
@@ -105,8 +99,10 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
     private LocationComponent locationComponent;
     private LocationComponentActivationOptions locationComponentActivationOptions;
 
-    private List<BeaconBuilding> beaconBuildings;
-    private DateIntervalFormat MySingleton;
+    private List<BeaconBuilding> beaconBuildings = new ArrayList<>();
+
+
+    private Building1 nearestBuilding;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -118,33 +114,15 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
         checkPermissions(IndoorMapActivity.this, this);
         requestPermissions();
 
-        initBeaconScanner();
-
         mapView = findViewById(R.id.mapView);
         mapView.onCreate(savedInstanceState);
 
-        String url = "http://localhost:3000/v1/beacons";
-
-        JsonObjectRequest jsonObjectRequest = new JsonObjectRequest
-                (Request.Method.GET, url, null, new Response.Listener<JSONObject>() {
-
-                    @Override
-                    public void onResponse(JSONObject response) {
-
-                    }
-                }, new Response.ErrorListener() {
-
-                    @Override
-                    public void onErrorResponse(VolleyError error) {
-                        // TODO: Handle error
-
-                    }
-                });
-
-        // Access the RequestQueue through your singleton class.
-        //MySingleton.getInstance(this).addToRequestQueue(jsonObjectRequest);
+        calculateNearBuilding();
 
 
+    }
+
+    private void initMap() {
         mapView.getMapAsync(new OnMapReadyCallback() {
             @Override
             public void onMapReady(@NonNull final MapboxMap mapboxMap) {
@@ -154,18 +132,17 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                         levelButtons = findViewById(R.id.floor_level_buttons);
 
                         final List<Point> boundingBox = new ArrayList<>();
-
                         boundingBox.add(Point.fromLngLat(-77.03791, 38.89715));
                         boundingBox.add(Point.fromLngLat(-77.03791, 38.89811));
                         boundingBox.add(Point.fromLngLat(-77.03532, 38.89811));
                         boundingBox.add(Point.fromLngLat(-77.03532, 38.89708));
-
                         boundingBoxList = new ArrayList<>();
                         boundingBoxList.add(boundingBox);
 
                         mapboxMap.addOnCameraMoveListener(new MapboxMap.OnCameraMoveListener() {
                             @Override
                             public void onCameraMove() {
+                                /*
                                 if (mapboxMap.getCameraPosition().zoom > 16) {
                                     if (TurfJoins.inside(Point.fromLngLat(mapboxMap.getCameraPosition().target.getLongitude(),
                                             mapboxMap.getCameraPosition().target.getLatitude()),
@@ -181,13 +158,18 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                                 } else if (levelButtons.getVisibility() == View.VISIBLE) {
                                     hideLevelButton();
                                 }
+
+                                 */
                             }
                         });
-                        indoorBuildingSource = new GeoJsonSource(
-                                "indoor-building", loadJsonFromAsset("white_house_lvl_0.geojson"));
-                        style.addSource(indoorBuildingSource);
 
-// Add the building layers since we know zoom levels in range
+
+                        /*GeoJsonSource geoJsonindoorBuilding = new GeoJsonSource(
+                                "indoor-building", loadJsonFromAsset("white_house_lvl_1.geojson"));*/
+                        style.addSource(geoJsonIndoorBuilding);
+
+
+                        // Add the building layers since we know zoom levels in range
                         loadBuildingLayer(style);
 
 
@@ -199,98 +181,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                             }
                         });
 
-
-                        // create circle manager
-                        CircleManager circleManager = new CircleManager(mapView, mapboxMap, style);
-                        circleManager.addClickListener(new OnCircleClickListener() {
-                            @Override
-                            public void onAnnotationClick(Circle circle) {
-                                Toast.makeText(IndoorMapActivity.this,
-                                        String.format("Circle clicked %s", circle.getId()),
-                                        Toast.LENGTH_SHORT
-                                ).show();
-                            }
-                        });
-
-                        // create a fixed circle
-                        CircleOptions circleOptions = new CircleOptions()
-                                .withLatLng(new LatLng(38.89756475643293, -77.03659892961862))
-                                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
-                                .withCircleRadius(12f)
-                                .withDraggable(true);
-                        circleManager.create(circleOptions);
-
-                        CircleOptions circleOptions2 = new CircleOptions()
-                                .withLatLng(new LatLng(38.89756599127142, -77.03648413017417))
-                                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
-                                .withCircleRadius(12f)
-                                .withDraggable(true);
-                        circleManager.create(circleOptions2);
-
-                        CircleOptions circleOptions3 = new CircleOptions()
-                                .withLatLng(new LatLng(38.897640548208614, -77.03654186019196))
-                                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
-                                .withCircleRadius(12f)
-                                .withDraggable(true);
-                        circleManager.create(circleOptions3);
-
-                        Type listType = new TypeToken<List<BeaconBuilding>>() {
-                        }.getType();
-                        beaconBuildings = new Gson().fromJson(loadJsonFromAsset("beacons.json"), listType);
-
-
-                        //LatLng position = getCentralGeoCoordinate(beacons);
-                        double kFilteringFactor = 0.1;
-
-                        double rollingRssi = 0;
-                        rollingRssi = (-95 * kFilteringFactor) + (rollingRssi * (1.0 - kFilteringFactor));
-                        double value = calculateAccuracyWithRSSI(rollingRssi);
-
-                        double rollingRssi2 = 0;
-                        rollingRssi2 = (-200 * kFilteringFactor) + (rollingRssi2 * (1.0 - kFilteringFactor));
-                        double value2 = calculateAccuracyWithRSSI(rollingRssi2);
-
-
-                        BeaconBuilding a = beaconBuildings.get(0);
-                        BeaconBuilding b = beaconBuildings.get(1);
-                        BeaconBuilding c = beaconBuildings.get(2);
-
-
-                        double R = 6371;
-                        double x1 = R * cos(a.getLat()) * cos(a.getLng());
-                        double y1 = R * cos(a.getLat()) * sin(a.getLng());
-
-                        double x2 = R * cos(b.getLat()) * cos(b.getLng());
-                        double y2 = R * cos(b.getLat()) * sin(b.getLng());
-
-                        double x3 = R * cos(c.getLat()) * cos(c.getLng());
-                        double y3 = R * cos(c.getLat()) * sin(c.getLng());
-
-                        double[][] positions = new double[][]{{x1, y1}, {x2, y2}, {x3, y3}};
-                        double[] distances = new double[]{2000, 1300.97, 3000.32};
-
-                        NonLinearLeastSquaresSolver solver = new NonLinearLeastSquaresSolver(new
-                                TrilaterationFunction(positions, distances), new LevenbergMarquardtOptimizer());
-                        LeastSquaresOptimizer.Optimum optimum = solver.solve();
-
-                        // the answer
-                        double[] centroid = optimum.getPoint().toArray();
-
-                        //error and geometry information; may throw SingularMatrixException
-                        // depending the threshold argument provided
-                        RealVector standardDeviation = optimum.getSigma(0);
-                        RealMatrix covarianceMatrix = optimum.getCovariances(0);
-
-                        double z = 1;
-                        double lat = asin(z / R);
-                        double lon = atan2(centroid[0], centroid[1]);
-
-                        /*CircleOptions userPosition = new CircleOptions()
-                .withLatLng(new LatLng(position.getLatitude(), position.getLongitude()))
-                .withCircleColor(ColorUtils.colorToRgbaString(Color.RED))
-                .withCircleRadius(12f)
-                .withDraggable(true);
-        circleManager.create(userPosition);*/
+                        loadCircleBeacons(style, mapboxMap);
 
                         LocationComponentOptions locationComponentOptions =
                                 LocationComponentOptions.builder(getApplicationContext())
@@ -315,7 +206,8 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                 buttonSecondLevel.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        indoorBuildingSource.setGeoJson(loadJsonFromAsset("white_house_lvl_1.geojson"));
+                        loadFloor(0);
+                        //geoJsonIndoorBuilding.setGeoJson(loadJsonFromAsset("white_house_lvl_1.geojson"));
                     }
                 });
 
@@ -323,13 +215,181 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                 buttonGroundLevel.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        indoorBuildingSource.setGeoJson(loadJsonFromAsset("white_house_lvl_0.geojson"));
+
+                        //geoJsonIndoorBuilding.setGeoJson(loadJsonFromAsset("white_house_lvl_0.geojson"));
                     }
                 });
-
-
             }
         });
+    }
+
+    private void calculateNearBuilding() {
+
+        LatLng position = new LatLng(37.358507, -5.986327);
+
+        String url = "http://192.168.0.252:3000/v1/buildings?latitude=" + position.getLatitude() + "&longitude=" + position.getLongitude();
+        RequestQueue queue = Volley.newRequestQueue(this);
+        // Request a string response from the provided URL.
+        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.i("JSON", response.toString());
+
+                        nearestBuilding = new Gson().fromJson(response, Building1.class);
+
+
+                        initBeacons();
+
+                    }
+                }, new Response.ErrorListener() {
+            @Override
+            public void onErrorResponse(VolleyError error) {
+                Log.i("ERROR", error.toString());
+            }
+        });
+        // Add the request to the RequestQueue.
+        queue.add(stringRequest);
+    }
+
+    private void initBeacons() {
+    /*Type listType = new TypeToken<List<BeaconBuilding>>()
+    }.getType();
+    beaconBuildings = new Gson().fromJson(loadJsonFromAsset("beacons.json"), listType);*/
+
+        String url = "http://192.168.0.252:3000/v1/beacons?buildingId=" + nearestBuilding.getId();
+        RequestQueue queue = Volley.newRequestQueue(this);
+        // Request a string response from the provided URL.
+        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.i("JSON", response.toString());
+
+                        //BeaconPage beaconPage = new Gson().fromJson(response, BeaconPage.class);
+                        //beaconBuildings = beaconPage.getResults();
+
+                        Type listType = new TypeToken<List<BeaconBuilding>>() {
+                        }.getType();
+                        beaconBuildings = new Gson().fromJson(response, listType);
+
+
+                        initBeaconScanner();
+
+                        initGeoJson();
+
+                    }
+                }, new Response.ErrorListener() {
+            @Override
+            public void onErrorResponse(VolleyError error) {
+                Log.i("ERROR", error.toString());
+            }
+        });
+        // Add the request to the RequestQueue.
+        queue.add(stringRequest);
+    }
+
+    private void initGeoJson() {
+
+        String url = "http://192.168.0.252:3000/v1/floors?buildingId=" + nearestBuilding.getId() + "&floorNumber=0";
+        RequestQueue queue = Volley.newRequestQueue(this);
+
+        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.i("JSON", response.toString());
+
+                        //FeatureCollection featureCollection = FeatureCollection.fromJson(response);
+
+                        geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", response);
+
+                        //geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", featureCollection);
+
+                        //FeatureCollection featureCollection = new FeatureCollection();
+                        //BuildingPage buildingPage = new Gson().fromJson(response, BuildingPage.class);
+
+                        initMap();
+
+                    }
+                }, new Response.ErrorListener() {
+            @Override
+            public void onErrorResponse(VolleyError error) {
+                Log.i("ERROR", error.toString());
+            }
+        });
+        // Add the request to the RequestQueue.
+        queue.add(stringRequest);
+    }
+
+
+    private void loadFloor(int i) {
+
+        String url = "http://192.168.0.252:3000/v1/buildings/5f678172e020a41391d2cfd9";
+        RequestQueue queue = Volley.newRequestQueue(this);
+
+        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.i("JSON", response.toString());
+
+                        FeatureCollection featureCollection = FeatureCollection.fromJson(response);
+
+                        //geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", response);
+
+                        geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", featureCollection);
+
+                        //FeatureCollection featureCollection = new FeatureCollection();
+                        //BuildingPage buildingPage = new Gson().fromJson(response, BuildingPage.class);
+
+                        initMap();
+
+                    }
+                }, new Response.ErrorListener() {
+            @Override
+            public void onErrorResponse(VolleyError error) {
+                Log.i("ERROR", error.toString());
+            }
+        });
+        // Add the request to the RequestQueue.
+        queue.add(stringRequest);
+    }
+
+    private void loadCircleBeacons(@NonNull Style style, @NonNull MapboxMap mapboxMap) {
+        // create circle manager
+        CircleManager circleManager = new CircleManager(mapView, mapboxMap, style);
+        circleManager.addClickListener(new OnCircleClickListener() {
+            @Override
+            public void onAnnotationClick(Circle circle) {
+                Toast.makeText(IndoorMapActivity.this,
+                        String.format("Circle clicked %s", circle.getId()),
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+
+        // create a fixed circle
+        CircleOptions circleOptions = new CircleOptions()
+                .withLatLng(new LatLng(37.358140319763294, -5.987024166876807))
+                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
+                .withCircleRadius(12f)
+                .withDraggable(true);
+        circleManager.create(circleOptions);
+
+        CircleOptions circleOptions2 = new CircleOptions()
+                .withLatLng(new LatLng(37.35826293615726, -5.9870105230474735))
+                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
+                .withCircleRadius(12f)
+                .withDraggable(true);
+        circleManager.create(circleOptions2);
+
+        CircleOptions circleOptions3 = new CircleOptions()
+                .withLatLng(new LatLng(37.35820630661975, -5.986862294281593))
+                .withCircleColor(ColorUtils.colorToRgbaString(Color.BLUE))
+                .withCircleRadius(12f)
+                .withDraggable(true);
+        circleManager.create(circleOptions3);
     }
 
     private void initBeaconScanner() {
@@ -373,8 +433,11 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
         location.setLongitude(position.getLongitude());
         locationComponent.activateLocationComponent(locationComponentActivationOptions);
 
+
         locationComponent.forceLocationUpdate(location);
         //locationComponent.setLocationComponentEnabled(true);
+
+
     }
 
     @Override
@@ -466,7 +529,6 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
     private String loadJsonFromAsset(String filename) {
 // Using this method to load in GeoJSON files from the assets folder.
-
         try {
             InputStream is = getAssets().open(filename);
             int size = is.available();
@@ -481,74 +543,6 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
         }
     }
 
-    public LatLng getCentralGeoCoordinate(List<BeaconBuilding> geoCoordinates) {
-//        if (geoCoordinates.Count == 1) {
-//            return geoCoordinates.Single();
-//        }
-        double x = 0;
-        double y = 0;
-        double z = 0;
-
-        for (BeaconBuilding coordinate : geoCoordinates) {
-
-            double latitude = coordinate.getLat() * Math.PI / 180;
-            double longitude = coordinate.getLng() * Math.PI / 180;
-
-            x += cos(latitude) * cos(longitude);
-            y += cos(latitude) * sin(longitude);
-            z += sin(latitude);
-        }
-
-        int total = geoCoordinates.size();
-
-        x = x / total;
-        y = y / total;
-        z = z / total;
-
-        double centralLongitude = atan2(y, x);
-        double centralSquareRoot = Math.sqrt(x * x + y * y);
-        double centralLatitude = atan2(z, centralSquareRoot);
-
-        return new LatLng(centralLatitude * 180 / Math.PI, centralLongitude * 180 / Math.PI);
-    }
-
-
-    public LatLng getCoordinateWithBeaconA(BeaconBuilding a, BeaconBuilding b, BeaconBuilding c, double dA, double dB, double dC) {
-        double W, Z, x, y, y2;
-        W = dA * dA - dB * dB - a.getLat() * a.getLat() - a.getLng() * a.getLng() + b.getLat() * b.getLat() + b.getLng() * b.getLng();
-        Z = dB * dB - dC * dC - b.getLat() * b.getLat() - b.getLng() * b.getLng() + c.getLat() * c.getLat() + c.getLng() * c.getLng();
-
-        x = (W * (c.getLng() - b.getLng()) - Z * (b.getLng() - a.getLng())) / (2 * ((b.getLat() - a.getLat()) * (c.getLng() - b.getLng())
-                - (c.getLat() - b.getLat()) * (b.getLng() - a.getLng())));
-        y = (W - 2 * x * (b.getLat() - a.getLat())) / (2 * (b.getLng() - a.getLng()));
-        //y2 is a second measure of y to mitigate errors
-        y2 = (Z - 2 * x * (c.getLat() - b.getLat())) / (2 * (c.getLng() - b.getLng()));
-
-        y = (y + y2) / 2;
-        return new LatLng(x, y);
-    }
-
-
-    public LatLng getCoordinateWithBeacons(BeaconBuilding beaconBuilding1,
-                                           BeaconBuilding beaconBuilding2, BeaconBuilding beaconBuilding3, double distance1,
-                                           double distance2, double distance3) {
-        double xa = beaconBuilding1.getLat();
-        double ya = beaconBuilding1.getLng();
-        double xb = beaconBuilding2.getLat();
-        double yb = beaconBuilding2.getLng();
-        double xc = beaconBuilding3.getLat();
-        double yc = beaconBuilding3.getLng();
-        double ra = distance1;
-        double rb = distance2;
-        double rc = distance3;
-
-        double S = (pow(xc, 2.) - pow(xb, 2.) + pow(yc, 2.) - pow(yb, 2.) + pow(rb, 2.) - pow(rc, 2.)) / 2.0;
-        double T = (pow(xa, 2.) - pow(xb, 2.) + pow(ya, 2.) - pow(yb, 2.) + pow(rb, 2.) - pow(ra, 2.)) / 2.0;
-        double y = ((T * (xb - xc)) - (S * (xb - xa))) / (((ya - yb) * (xb - xc)) - ((yc - yb) * (xb - xa)));
-        double x = ((y * (ya - yb)) - T) / (xb - xa);
-
-        return new LatLng(x, y);
-    }
 
     public double calculateAccuracyWithRSSI(double rssi) {
         //formula adapted from David Young's Radius Networks Android iBeacon Code
@@ -676,7 +670,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
     int RC_COARSE_LOCATION = 1;
 
     private void startScan() {
-        //mBluetoothAdapter.enable();
+        mBluetoothAdapter.enable();
         if (mBluetoothAdapter.isEnabled()) {
             if (beaconManager.isBound(this) != true) {
                 beaconManager.bind(this);
@@ -716,44 +710,45 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
             storeBeaconsAround(beacons);
 //            Log.i("", "El primer beacon detectado se encuentra a una distancia de " +
 //                    beacons.iterator().next().getBluetoothAddress() + " metros.");
-        //Log.i("Nuevo",beacons.iterator().next().getBluetoothAddress().toString());
+            //Log.i("Nuevo",beacons.iterator().next().getBluetoothAddress().toString());
         }
     }
 
 
-    private void storeBeaconsAround(Collection<Beacon> beacons){
+    private void storeBeaconsAround(Collection<Beacon> beacons) {
 
-        if(resetDistances==5){
-            resetDistances=0;
+        if (resetDistances == 5) {
+            resetDistances = 0;
 
-            for(BeaconBuilding beaconBuilding: beaconBuildings){
+            for (BeaconBuilding beaconBuilding : beaconBuildings) {
                 beaconBuilding.setDistance(10.0);
 
             }
-            allBeacons= new ArrayList<>();
+            allBeacons = new ArrayList<>();
 
         }
 
-        for(Beacon newBeacon : beacons){
-            if(!allBeacons.contains(newBeacon)){
+        for (Beacon newBeacon : beacons) {
+            if (!allBeacons.contains(newBeacon)) {
                 allBeacons.add(newBeacon);
-            } else{
-                allBeacons.set(allBeacons.indexOf(newBeacon),newBeacon);
+            } else {
+                allBeacons.set(allBeacons.indexOf(newBeacon), newBeacon);
             }
         }
 
-        for(Beacon b1 : allBeacons){
+        for (Beacon b1 : allBeacons) {
             BeaconBuilding beaconFound = beaconBuildings.stream().filter(beaconBuilding -> beaconBuilding.getBluetoothAddress()
                     .equals(b1.getBluetoothAddress())).findFirst().orElse(null);
 
-            if(beaconFound != null) {
+            if (beaconFound != null) {
                 beaconFound.setDistance(b1.getDistance());
-                beaconBuildings.set(beaconBuildings.indexOf(beaconFound),beaconFound);
+                beaconBuildings.set(beaconBuildings.indexOf(beaconFound), beaconFound);
             }
         }
 
         //Log.i("Encontrados",beacons.toString());
         Log.i("Todos", beaconBuildings.toString());
+
         updatePosition();
         resetDistances++;
     }
@@ -785,4 +780,72 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
     }
 
 
+    public LatLng getCentralGeoCoordinate(List<BeaconBuilding> geoCoordinates) {
+//        if (geoCoordinates.Count == 1) {
+//            return geoCoordinates.Single();
+//        }
+        double x = 0;
+        double y = 0;
+        double z = 0;
+
+        for (BeaconBuilding coordinate : geoCoordinates) {
+
+            double latitude = coordinate.getLat() * Math.PI / 180;
+            double longitude = coordinate.getLng() * Math.PI / 180;
+
+            x += cos(latitude) * cos(longitude);
+            y += cos(latitude) * sin(longitude);
+            z += sin(latitude);
+        }
+
+        int total = geoCoordinates.size();
+
+        x = x / total;
+        y = y / total;
+        z = z / total;
+
+        double centralLongitude = atan2(y, x);
+        double centralSquareRoot = Math.sqrt(x * x + y * y);
+        double centralLatitude = atan2(z, centralSquareRoot);
+
+        return new LatLng(centralLatitude * 180 / Math.PI, centralLongitude * 180 / Math.PI);
+    }
+
+
+    public LatLng getCoordinateWithBeaconA(BeaconBuilding a, BeaconBuilding b, BeaconBuilding c, double dA, double dB, double dC) {
+        double W, Z, x, y, y2;
+        W = dA * dA - dB * dB - a.getLat() * a.getLat() - a.getLng() * a.getLng() + b.getLat() * b.getLat() + b.getLng() * b.getLng();
+        Z = dB * dB - dC * dC - b.getLat() * b.getLat() - b.getLng() * b.getLng() + c.getLat() * c.getLat() + c.getLng() * c.getLng();
+
+        x = (W * (c.getLng() - b.getLng()) - Z * (b.getLng() - a.getLng())) / (2 * ((b.getLat() - a.getLat()) * (c.getLng() - b.getLng())
+                - (c.getLat() - b.getLat()) * (b.getLng() - a.getLng())));
+        y = (W - 2 * x * (b.getLat() - a.getLat())) / (2 * (b.getLng() - a.getLng()));
+        //y2 is a second measure of y to mitigate errors
+        y2 = (Z - 2 * x * (c.getLat() - b.getLat())) / (2 * (c.getLng() - b.getLng()));
+
+        y = (y + y2) / 2;
+        return new LatLng(x, y);
+    }
+
+
+    public LatLng getCoordinateWithBeacons(BeaconBuilding beaconBuilding1,
+                                           BeaconBuilding beaconBuilding2, BeaconBuilding beaconBuilding3, double distance1,
+                                           double distance2, double distance3) {
+        double xa = beaconBuilding1.getLat();
+        double ya = beaconBuilding1.getLng();
+        double xb = beaconBuilding2.getLat();
+        double yb = beaconBuilding2.getLng();
+        double xc = beaconBuilding3.getLat();
+        double yc = beaconBuilding3.getLng();
+        double ra = distance1;
+        double rb = distance2;
+        double rc = distance3;
+
+        double S = (pow(xc, 2.) - pow(xb, 2.) + pow(yc, 2.) - pow(yb, 2.) + pow(rb, 2.) - pow(rc, 2.)) / 2.0;
+        double T = (pow(xa, 2.) - pow(xb, 2.) + pow(ya, 2.) - pow(yb, 2.) + pow(rb, 2.) - pow(ra, 2.)) / 2.0;
+        double y = ((T * (xb - xc)) - (S * (xb - xa))) / (((ya - yb) * (xb - xc)) - ((yc - yb) * (xb - xa)));
+        double x = ((y * (ya - yb)) - T) / (xb - xa);
+
+        return new LatLng(x, y);
+    }
 }

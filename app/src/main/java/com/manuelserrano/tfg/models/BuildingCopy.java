@@ -1,11 +1,12 @@
 
 package com.manuelserrano.tfg.models;
 
-import java.util.List;
 import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 
-public class Building {
+import java.util.List;
+
+public class BuildingCopy {
 
     @SerializedName("type")
     @Expose
