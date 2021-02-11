@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.location.Location;
 import android.os.Bundle;
@@ -33,9 +34,11 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.manuelserrano.tfg.models.BeaconBuilding;
 import com.manuelserrano.tfg.models.Building1;
+import com.mapbox.geojson.Feature;
 import com.mapbox.geojson.FeatureCollection;
 import com.mapbox.geojson.Point;
 import com.mapbox.mapboxsdk.Mapbox;
+import com.mapbox.mapboxsdk.annotations.MarkerOptions;
 import com.mapbox.mapboxsdk.geometry.LatLng;
 import com.mapbox.mapboxsdk.location.LocationComponent;
 import com.mapbox.mapboxsdk.location.LocationComponentActivationOptions;
@@ -52,6 +55,7 @@ import com.mapbox.mapboxsdk.plugins.annotation.CircleOptions;
 import com.mapbox.mapboxsdk.plugins.annotation.OnCircleClickListener;
 import com.mapbox.mapboxsdk.style.layers.FillLayer;
 import com.mapbox.mapboxsdk.style.layers.LineLayer;
+import com.mapbox.mapboxsdk.style.layers.SymbolLayer;
 import com.mapbox.mapboxsdk.style.sources.GeoJsonSource;
 import com.mapbox.mapboxsdk.utils.ColorUtils;
 
@@ -77,6 +81,9 @@ import static com.mapbox.mapboxsdk.style.expressions.Expression.stop;
 import static com.mapbox.mapboxsdk.style.expressions.Expression.zoom;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.fillColor;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.fillOpacity;
+import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.iconAllowOverlap;
+import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.iconIgnorePlacement;
+import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.iconImage;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineColor;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineOpacity;
 import static com.mapbox.mapboxsdk.style.layers.PropertyFactory.lineWidth;
@@ -86,6 +93,8 @@ import static java.lang.Math.pow;
 import static java.lang.Math.sin;
 
 public class IndoorMapActivity extends AppCompatActivity implements BeaconConsumer, RangeNotifier {
+
+    private String BASE_URL = "https://mysterious-meadow-52644.herokuapp.com";
 
     private GeoJsonSource geoJsonIndoorBuilding;
 
@@ -227,7 +236,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
         LatLng position = new LatLng(37.358507, -5.986327);
 
-        String url = "http://192.168.0.252:3000/v1/buildings?latitude=" + position.getLatitude() + "&longitude=" + position.getLongitude();
+        String url = BASE_URL+"/v1/buildings?latitude=" + position.getLatitude() + "&longitude=" + position.getLongitude();
         RequestQueue queue = Volley.newRequestQueue(this);
         // Request a string response from the provided URL.
         StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
@@ -257,7 +266,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
     }.getType();
     beaconBuildings = new Gson().fromJson(loadJsonFromAsset("beacons.json"), listType);*/
 
-        String url = "http://192.168.0.252:3000/v1/beacons?buildingId=" + nearestBuilding.getId();
+        String url = BASE_URL+"/v1/beacons?buildingId=" + nearestBuilding.getId();
         RequestQueue queue = Volley.newRequestQueue(this);
         // Request a string response from the provided URL.
         StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
@@ -291,7 +300,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
     private void initGeoJson() {
 
-        String url = "http://192.168.0.252:3000/v1/floors?buildingId=" + nearestBuilding.getId() + "&floorNumber=0";
+        String url = BASE_URL+"/v1/floors?buildingId=" + nearestBuilding.getId() + "&floorNumber=0";
         RequestQueue queue = Volley.newRequestQueue(this);
 
         StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
@@ -325,7 +334,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
     private void loadFloor(int i) {
 
-        String url = "http://192.168.0.252:3000/v1/buildings/5f678172e020a41391d2cfd9";
+        String url = BASE_URL+"/v1/buildings/5f678172e020a41391d2cfd9";
         RequestQueue queue = Volley.newRequestQueue(this);
 
         StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
@@ -338,7 +347,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
                         //geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", response);
 
-                        geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", featureCollection);
+                        //geoJsonIndoorBuilding = new GeoJsonSource("indoor-building", featureCollection);
 
                         //FeatureCollection featureCollection = new FeatureCollection();
                         //BuildingPage buildingPage = new Gson().fromJson(response, BuildingPage.class);
@@ -358,7 +367,7 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
     private void loadCircleBeacons(@NonNull Style style, @NonNull MapboxMap mapboxMap) {
         // create circle manager
-        CircleManager circleManager = new CircleManager(mapView, mapboxMap, style);
+        /* CircleManager circleManager = new CircleManager(mapView, mapboxMap, style);
         circleManager.addClickListener(new OnCircleClickListener() {
             @Override
             public void onAnnotationClick(Circle circle) {
@@ -390,6 +399,30 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
                 .withCircleRadius(12f)
                 .withDraggable(true);
         circleManager.create(circleOptions3);
+
+*/
+
+        mapboxMap.getStyle().addImage("ICON_ID", BitmapFactory.decodeResource(
+                IndoorMapActivity.this.getResources(), R.drawable.mapbox_marker_icon_default));
+
+
+        GeoJsonSource geoJsonindoorBuilding2 = new GeoJsonSource(
+                "SOURCE_ID", loadJsonFromAsset("points.geojson"));
+        mapboxMap.getStyle().addSource(geoJsonindoorBuilding2);
+
+        mapboxMap.getStyle().addLayer(new SymbolLayer("LAYER_ID", "SOURCE_ID")
+                .withProperties(
+                        iconImage("ICON_ID"),
+                        iconAllowOverlap(true),
+                        iconIgnorePlacement(true)
+                ));
+
+/*
+        mapboxMap.addMarker(new MarkerOptions()
+                .position(new LatLng(37.35820630661975, -5.986862294281593))
+                .title("Eiffel Tower"));
+                */
+
     }
 
     private void initBeaconScanner() {
@@ -848,4 +881,5 @@ public class IndoorMapActivity extends AppCompatActivity implements BeaconConsum
 
         return new LatLng(x, y);
     }
+
 }
